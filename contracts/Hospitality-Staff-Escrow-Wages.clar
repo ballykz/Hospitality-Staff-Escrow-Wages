@@ -10,11 +10,15 @@
 (define-constant err-invalid-hours (err u106))
 (define-constant err-no-wages (err u107))
 (define-constant err-already-claimed (err u108))
+(define-constant err-dispute-not-found (err u109))
+(define-constant err-already-disputed (err u110))
+(define-constant err-already-resolved (err u111))
 
 (define-constant blocks-per-day u144)
 
 (define-data-var next-staff-id uint u1)
 (define-data-var next-shift-id uint u1)
+(define-data-var next-dispute-id uint u1)
 
 (define-map staff-registry
   uint
@@ -55,6 +59,21 @@
   uint
 )
 
+(define-map dispute-logs
+  uint
+  {
+    shift-id: uint,
+    staff-id: uint,
+    reason: (string-ascii 200),
+    filed-at: uint,
+    resolved: bool,
+    resolution: (optional (string-ascii 200)),
+    resolved-at: (optional uint)
+  }
+)
+
+(define-map shift-disputes uint uint)
+
 (define-read-only (get-staff-by-id (staff-id uint))
   (map-get? staff-registry staff-id)
 )
@@ -85,6 +104,18 @@
 
 (define-read-only (get-next-shift-id)
   (ok (var-get next-shift-id))
+)
+
+(define-read-only (get-dispute (dispute-id uint))
+  (map-get? dispute-logs dispute-id)
+)
+
+(define-read-only (get-shift-dispute (shift-id uint))
+  (map-get? shift-disputes shift-id)
+)
+
+(define-read-only (get-next-dispute-id)
+  (ok (var-get next-dispute-id))
 )
 
 (define-read-only (calculate-wages (hourly-rate uint) (hours uint))
@@ -281,5 +312,48 @@
       state
     )
     state
+  )
+)
+
+(define-public (file-dispute (shift-id uint) (reason (string-ascii 200)))
+  (let
+    (
+      (shift-data (unwrap! (map-get? shift-logs shift-id) err-not-found))
+      (staff-id (get staff-id shift-data))
+      (staff-data (unwrap! (map-get? staff-registry staff-id) err-not-found))
+      (dispute-id (var-get next-dispute-id))
+      (current-block stacks-block-height)
+    )
+    (asserts! (is-eq tx-sender (get wallet staff-data)) err-unauthorized)
+    (asserts! (is-none (map-get? shift-disputes shift-id)) err-already-disputed)
+    (map-set dispute-logs dispute-id {
+      shift-id: shift-id,
+      staff-id: staff-id,
+      reason: reason,
+      filed-at: current-block,
+      resolved: false,
+      resolution: none,
+      resolved-at: none
+    })
+    (map-set shift-disputes shift-id dispute-id)
+    (var-set next-dispute-id (+ dispute-id u1))
+    (ok dispute-id)
+  )
+)
+
+(define-public (resolve-dispute (dispute-id uint) (resolution (string-ascii 200)))
+  (let
+    (
+      (dispute-data (unwrap! (map-get? dispute-logs dispute-id) err-dispute-not-found))
+      (current-block stacks-block-height)
+    )
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (not (get resolved dispute-data)) err-already-resolved)
+    (map-set dispute-logs dispute-id (merge dispute-data {
+      resolved: true,
+      resolution: (some resolution),
+      resolved-at: (some current-block)
+    }))
+    (ok true)
   )
 )
